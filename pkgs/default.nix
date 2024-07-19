@@ -37,4 +37,6 @@ in
     }))
     builtins.listToAttrs
   ];
+
+  fetcher = pkgs.callPackage ./fetcher { inherit self; };
 }
