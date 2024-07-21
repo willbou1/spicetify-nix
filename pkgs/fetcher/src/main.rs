@@ -1,5 +1,9 @@
+use std::{collections::HashMap, process::Command};
+
 use octocrab::{models::Repository, Octocrab};
 use serde::{Deserialize, Serialize};
+
+const NIX: &str = "/run/current-system/sw/bin/nix";
 
 #[derive(Serialize, Deserialize)]
 struct Blacklist {
@@ -15,10 +19,11 @@ struct Author {
 
 #[derive(Serialize, Deserialize)]
 struct ExtManifest {
-    name: Option<String>,
+    name: String,
     description: Option<String>,
     preview: Option<String>,
     main: Option<String>,
+
     readme: Option<String>,
     branch: Option<String>,
     authors: Option<Vec<Author>>,
@@ -33,7 +38,7 @@ enum ListOrExtManifest {
 
 #[derive(Serialize, Deserialize)]
 struct ThemeManifest {
-    name: Option<String>,
+    name: String,
     description: Option<String>,
     preview: Option<String>,
     usercss: Option<String>,
@@ -54,7 +59,7 @@ enum ListOrThemeManifest {
 
 #[derive(Serialize, Deserialize)]
 struct AppManifest {
-    name: Option<String>,
+    name: String,
     description: Option<String>,
     preview: Option<String>,
     readme: Option<String>,
@@ -70,6 +75,32 @@ enum ListOrAppManifest {
     List(Vec<AppManifest>),
 }
 
+#[derive(Serialize, Deserialize)]
+struct ExtOutput {
+    //name: String,
+    //path: String,
+    owner: String,
+    repo: String,
+    hash: String,
+    rev: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ExtTuple {
+    manifests: Vec<ExtManifest>,
+    repo: Repository,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Output {
+    extensions: Vec<ExtOutput>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Prefetch {
+    hash: String,
+    storePath: String,
+}
 async fn search_tag(crab: &Octocrab, tag: &str) -> Vec<Repository> {
     let mut current_page = crab
         .search()
@@ -131,7 +162,7 @@ async fn get_manifest(crab: &Octocrab, repo: &Repository) -> Option<String> {
 #[tokio::main]
 async fn main() {
     let crab: Octocrab = octocrab::Octocrab::builder()
-        .personal_token(std::env::var("GITHUB_TOKEN").unwrap())
+        .personal_token(std::env::var("GITHUB_TOKEN").expect("no PAT key moron"))
         .build()
         .expect("Could not find $GITHUB_TOKEN");
 
@@ -143,10 +174,10 @@ async fn main() {
         .send()
         .await
         .expect("Could not get blacklist.json")
-        .take_items()
-        .into_iter()
-        .next()
-        .and_then(|x| x.decoded_content());
+        .items
+        .first()
+        .unwrap()
+        .decoded_content();
 
     let vector: Blacklist = serde_json::from_str(&blacklist.expect("Failed to read blacklist"))
         .expect("Failed to parse blacklist");
@@ -172,8 +203,9 @@ async fn main() {
         search_tag(&crab, "spicetify-extensions").await,
     );
 
-    let mut ext_manifests: Vec<ExtManifest> = vec![];
-    let mut filtered_exts: Vec<&Repository> = vec![];
+    let mut potato: HashMap<String, ExtOutput> = HashMap::new();
+
+    let mut ext_tuple: Vec<ExtTuple> = vec![];
 
     for i in 0..extensions.len() {
         let manifest = match get_manifest(&crab, &extensions[i]).await {
@@ -193,19 +225,65 @@ async fn main() {
             }
         };
 
-        match parse {
-            ListOrExtManifest::Not(n) => {
-                ext_manifests.push(n);
-                filtered_exts.push(&extensions[i])
-            }
-            ListOrExtManifest::List(mut l) => {
-                ext_manifests.append(&mut l);
-                filtered_exts.push(&extensions[i]);
-            }
-        };
+        ext_tuple.push(match parse {
+            ListOrExtManifest::Not(n) => ExtTuple {
+                manifests: vec![n],
+                repo: extensions[i].clone(),
+            },
+
+            ListOrExtManifest::List(l) => ExtTuple {
+                manifests: l,
+                repo: extensions[i].clone(),
+            },
+        });
     }
 
-    for i in ext_manifests {
-        println!("{},", i.name.unwrap_or(String::from("unga bunga")))
+    for i in ext_tuple {
+        for j in i.manifests {
+            let owner = &i.repo.owner.clone().expect("fuck").login;
+            let name = &i.repo.name;
+            let branch = &j
+                .branch
+                .clone()
+                .unwrap_or(i.repo.default_branch.clone().expect("shit"));
+            let rev = crab
+                .commits(owner, name)
+                .get(branch)
+                .await
+                .expect("balls")
+                .sha;
+
+            let file = format!(
+                "{}/archive/{}.tar.gz",
+                i.repo.html_url.clone().expect("cunt"),
+                rev
+            );
+
+            let command_stdout = Command::new(NIX)
+                .args(["store", "prefetch-file", &file, "--json"])
+                .output()
+                .expect("lol")
+                .stdout;
+            let prefetched: Prefetch =
+                serde_json::from_str(&String::from_utf8_lossy(&command_stdout)).expect("why");
+
+            let key = format!("{}-{}-{}", owner, name, branch);
+
+            if potato.get(&key).is_some() {
+                continue;
+            };
+            println!("{}", file);
+            potato.insert(
+                key,
+                ExtOutput {
+                    owner: owner.to_string(),
+                    repo: name.to_string(),
+                    rev,
+                    hash: prefetched.hash.to_string(),
+                },
+            );
+        }
     }
+
+    println!("{}", serde_json::to_string(&potato).unwrap())
 }
