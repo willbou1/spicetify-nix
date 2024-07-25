@@ -211,14 +211,9 @@
       requiredExtensions = [
         {
           src = "${sources.comfySrc}/Comfy";
-          name = "theme.js";
+          name = "theme.script.js";
         }
       ];
-      extraCommands = ''
-        # remove the auto-update functionality
-        echo "\n" >> ./Extensions/theme.js
-        cat ./Themes/Comfy/theme.script.js >> ./Extensions/theme.js
-      '';
     };
 
     # theres a thing at https://github.com/itsmeow/Spicetify-Canvas
