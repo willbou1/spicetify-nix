@@ -41,6 +41,8 @@ jobs:
           fi
 
           curl https://raw.githubusercontent.com/spicetify/marketplace/master/resources/snippets.json > pkgs/snippets.json
+
+          nix run nixpkgs#nix-update -- -F legacyPackages.$(nix eval --raw --impure --expr 'builtins.currentSystem').spicetify
           
           git add -A
 

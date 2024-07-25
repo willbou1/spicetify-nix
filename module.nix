@@ -137,8 +137,6 @@ in
 
     spotifywmPackage = lib.mkPackageOption pkgs "spotifywm" { };
 
-    spicetifyPackage = lib.mkPackageOption pkgs "spicetify-cli" { };
-
     windowManagerPatch = lib.mkEnableOption "preloading the spotifywm patch";
 
     extraCommands = lib.mkOption {
@@ -274,8 +272,8 @@ in
                 };
 
                 Backup = {
-                  inherit (cfg.spotifyPackage) version;
-                  "with" = cfg.spicetifyPackage.version;
+                  version = "";
+                  "with" = "";
                 };
               };
             in
@@ -286,9 +284,8 @@ in
             else
               xpui_;
 
-          pre = spicePkgs.spicetify.override {
+          pre = spicePkgs.spicetifyBuilder {
             spotify = cfg.spotifyPackage;
-            spicetify-cli = cfg.spicetifyPackage;
             extensions = allExtensions;
             apps = cfg.enabledCustomApps;
             theme = cfg.theme // {

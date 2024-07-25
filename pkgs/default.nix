@@ -7,6 +7,10 @@ in
   sources = lib.mapAttrs (_: pkgs.npins.mkSource) (lib.importJSON "${self}/pkgs/sources.json").pins;
   spicetify = pkgs.callPackage "${self}/pkgs/spicetify.nix" { };
 
+  spicetifyBuilder = pkgs.callPackage "${self}/pkgs/spicetifyBuilder.nix" {
+    inherit (spicePkgs) spicetify;
+  };
+
   /*
     Don't want to callPackage these because
     override and overrideDerivation cause issues with the module options
