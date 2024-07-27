@@ -1,13 +1,13 @@
 {
   lib,
   stdenv,
-  spotify,
   spicetify,
   writeText,
 }:
-lib.makeOverrideable (
+lib.makeOverridable (
   {
     # These are throw's for callPackage to be able to get to the override call
+    spotify,
     theme ? throw "",
     config-xpui ? { },
     customColorScheme ? { },

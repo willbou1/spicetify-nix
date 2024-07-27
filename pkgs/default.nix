@@ -2,41 +2,33 @@
 let
   inherit (pkgs) lib;
   spicePkgs = self.legacyPackages.${pkgs.stdenv.system};
+  json = lib.importJSON "${self}/generated.json";
+
+  makeExtension = v: {
+
+    inherit (v) name main;
+    outPath = (pkgs.fetchurl v.source);
+  };
 in
 {
-  sources = lib.mapAttrs (_: pkgs.npins.mkSource) (lib.importJSON "${self}/pkgs/sources.json").pins;
-  spicetify = pkgs.callPackage "${self}/pkgs/spicetify.nix" { };
+  inherit (json) snippets;
 
+  fetcher = pkgs.callPackage ./fetcher { inherit self; };
+  spicetify = pkgs.callPackage "${self}/pkgs/spicetify.nix" { };
   spicetifyBuilder = pkgs.callPackage "${self}/pkgs/spicetifyBuilder.nix" {
     inherit (spicePkgs) spicetify;
   };
 
-  /*
-    Don't want to callPackage these because
-    override and overrideDerivation cause issues with the module options
-    plus why would you want to override the pre-existing packages
-    when they're so simple to make
-  */
-  extensions = import "${self}/pkgs/extensions.nix" {
-    inherit (spicePkgs) sources;
-    inherit lib;
-  };
-  themes = import "${self}/pkgs/themes.nix" {
-    inherit (spicePkgs) sources extensions;
-    inherit pkgs lib;
-  };
-  apps = import "${self}/pkgs/apps.nix" { inherit (spicePkgs) sources; };
-  snippets = lib.pipe ./snippets.json [
-    lib.importJSON
-    (map (x: {
-      name = lib.pipe x.preview [
-        (lib.removePrefix "resources/assets/snippets/")
-        (x: builtins.substring 0 ((builtins.stringLength x) - 4) x)
-      ];
-      value = x.code;
-    }))
-    builtins.listToAttrs
-  ];
+  extensions = lib.mapAttrs (n: v: makeExtension v) json.extensions;
 
-  fetcher = pkgs.callPackage ./fetcher { inherit self; };
+  themes = lib.mapAttrs (n: v: {
+    inherit (v) name usercss schemes;
+    include = map makeExtension v.include;
+    outPath = (pkgs.fetchurl v.source);
+  }) json.themes;
+
+  apps = lib.mapAttrs (n: v: {
+    inherit (v) name;
+    outPath = (pkgs.fetchurl v.source);
+  }) json.apps;
 }

@@ -513,5 +513,5 @@ async fn main() {
     };
 
     let output = File::create("generated.json").expect("can't create generated.json");
-    serde_json::to_writer_pretty(&output, &final_output).expect("failed to save generated.json");
+    serde_json::to_writer(&output, &final_output).expect("failed to save generated.json");
 }
