@@ -24,9 +24,11 @@ lib.makeOverridable (
       + ''
         export SPICETIFY_CONFIG=$PWD
 
-        mkdir -p {Themes,Extensions,CustomApps}
+        mkdir -p {Extensions,CustomApps}
+        mkdir -p "Themes/${theme.name}"
+        cp -r ${theme}/${theme.usercss} "Themes/${theme.name}/user.css"
+        cp -r ${theme}/${theme.schemes} "Themes/${theme.name}/color.ini"
 
-        cp -r ${theme.src} Themes/${theme.name}
         chmod -R a+wr Themes
 
         ${lib.optionalString ((theme ? additionalCss) && theme.additionalCss != "") ''
@@ -39,7 +41,12 @@ lib.makeOverridable (
         ${theme.extraCommands or ""}
 
         # copy extensions into Extensions folder
-        ${lib.concatMapStringsSep "\n" (item: "cp -ru ${item.src}/${item.name} Extensions") extensions}
+        ${lib.concatMapStringsSep "\n" (
+          item:
+          "cp -ru ${
+            if (item.main == "__INCLUDE__") then item else "${item}/${item.main}"
+          } Extensions/${item.name}"
+        ) extensions}
 
         # copy custom apps into CustomApps folder
         ${lib.concatMapStringsSep "\n" (item: "cp -ru ${item.src} CustomApps/${item.name}") apps}

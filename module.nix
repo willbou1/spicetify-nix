@@ -11,19 +11,25 @@
 let
   cfg = config.programs.spicetify;
   spicePkgs = self.legacyPackages.${pkgs.stdenv.hostPlatform.system};
-  extensionType = lib.types.either lib.types.pathInStore (
+  extensionType = (
     lib.types.submodule {
+
+      freeformType = lib.types.attrs;
+
       options = {
-        src = lib.mkOption {
-          type = lib.types.pathInStore;
-          description = "Path to the folder which contains the .js file.";
-        };
         name = lib.mkOption {
           type = lib.types.str;
           description = "Name of the .js file to enable.";
           example = "dribbblish.js";
         };
-        experimentalFeatures = lib.mkEnableOption "experimental_features in config-xpui.ini";
+        main = lib.mkOption {
+          type = lib.types.str;
+          description = "Relative path from outPath to extensions .js file";
+        };
+        outPath = lib.mkOption {
+          type = lib.types.pathInStore;
+          description = "Path in store to repo containing extension";
+        };
       };
     }
   );
@@ -48,6 +54,9 @@ in
       inherit (spicePkgs.themes) default;
 
       type = lib.types.submodule {
+
+        freeformType = lib.types.attrs;
+
         options = {
           name = lib.mkOption {
             type = lib.types.str;
@@ -55,79 +64,15 @@ in
             example = "Dribbblish";
           };
 
-          src = lib.mkOption {
-
+          outPath = lib.mkOption {
             type = lib.types.pathInStore;
-            description = "Path to folder containing the theme.";
-            example = ''
-              fetchFromGitHub {
-                owner = "spicetify";
-                repo = "spicetify-themes";
-                rev = "02badb180c902f986a4ea4e4033e69fe8eec6a55";
-                hash = "sha256-KD9VfHtlN0BIHC4inlooxw5XC4xlHNC5evASRqP7pUA=";
-              }
-              Or a relative path 
-
-              ./myTheme
-            '';
+            description = "Path in store to repo containing theme";
           };
-          requiredExtensions = lib.mkOption {
+
+          include = lib.mkOption {
             type = lib.types.listOf extensionType;
             default = [ ];
-          };
-
-          patches = lib.mkOption {
-            type = lib.types.attrsOf lib.types.str;
-            example = ''
-              {
-                "xpui.js_find_8008" = ",(\\w+=)32";
-                "xpui.js_repl_8008" = ",$\{1}56";
-              };
-            '';
-            description = "INI entries to add in the [Patch] section of config-xpui.ini";
-            default = { };
-          };
-
-          extraCommands = lib.mkOption {
-            type = lib.types.lines;
-            default = "";
-            description = "A bash script to run from the spicetify config directory if this theme is installed.";
-          };
-
-          extraPkgs = lib.mkOption {
-            type = lib.types.listOf lib.types.package;
-            default = [ ];
-            description = "Extra required packges for the theme to function (usually a font)";
-          };
-
-          # some config values that can be specified per-theme
-          injectCss = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-          };
-          injectThemeJs = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-          };
-          replaceColors = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-          };
-          sidebarConfig = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-          };
-          homeConfig = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-          };
-          overwriteAssets = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-          };
-          additionalCss = lib.mkOption {
-            type = lib.types.lines;
-            default = "";
+            description = "List of required plugins for theme";
           };
         };
       };
@@ -151,21 +96,8 @@ in
       description = ''
         A list of extensions.
       '';
-      example = ''
-        [
-          {
-            src = (pkgs.fetchFromGitHub {
-              owner = "Taeko-ar";
-              repo = "spicetify-last-fm";
-              rev = "d2f1d3c1e286d789ddfa002f162405782d822c55";
-              hash = "sha256-/C4Y3zuSAEwhMXCRG2/4b5oWfGz/ij6wu0B+CpuJKXs=";
-            }) + /src;
-
-            name = "lastfm.js";
-          }
-        ]
-      '';
     };
+
     enabledCustomApps = lib.mkOption {
       type = lib.types.listOf (
         lib.types.submodule {
@@ -228,7 +160,7 @@ in
     let
 
       # take the list of extensions and turn strings into actual extensions
-      allExtensions = cfg.enabledExtensions ++ cfg.theme.requiredExtensions;
+      allExtensions = cfg.enabledExtensions ++ cfg.theme.include;
 
       # custom spotify package with spicetify integrated in
       spiced-spotify =
@@ -241,9 +173,9 @@ in
                   extensions = lib.concatMapStringsSep "|" (item: item.name) allExtensions;
                   custom_apps = lib.concatMapStringsSep "|" (item: item.name) cfg.enabledCustomApps;
 
-                  sidebar_config = cfg.theme.sidebarConfig;
+                  sidebar_config = true;
 
-                  home_config = cfg.theme.homeConfig;
+                  home_config = true;
 
                   experimental_features = lib.any (item: (item.experimentalFeatures or false)) allExtensions;
                 };
@@ -251,13 +183,13 @@ in
                 Setting = {
                   spotify_path = "__SPOTIFY__";
                   prefs_path = "__PREFS__";
-                  inject_theme_js = cfg.theme.injectThemeJs;
-                  replace_colors = cfg.theme.replaceColors;
+                  inject_theme_js = true;
+                  replace_colors = true;
                   check_spicetify_update = false;
                   current_theme = cfg.theme.name;
                   color_scheme = cfg.colorScheme;
-                  inject_css = cfg.theme.injectCss;
-                  overwrite_assets = cfg.theme.overwriteAssets;
+                  inject_css = true;
+                  overwrite_assets = true;
                   spotify_launch_flags = cfg.spotifyLaunchFlags;
                   always_enable_devtools = cfg.alwaysEnableDevTools;
                 };
@@ -289,7 +221,7 @@ in
             extensions = allExtensions;
             apps = cfg.enabledCustomApps;
             theme = cfg.theme // {
-              additionalCss = lib.concatLines ([ (cfg.theme.additionalCss or "") ] ++ cfg.enabledSnippets);
+              additionalCss = lib.concatLines cfg.enabledSnippets;
             };
             inherit (cfg) customColorScheme;
             # compose the configuration as well as options required by extensions and

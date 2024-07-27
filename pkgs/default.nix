@@ -7,7 +7,12 @@ let
   makeExtension = v: {
 
     inherit (v) name main;
-    outPath = (pkgs.fetchurl v.source);
+
+    outPath =
+      if v.main == "__INCLUDE__" then
+        pkgs.fetchurl v.source
+      else
+        pkgs.fetchzip (v.source // { extension = "tar"; });
   };
 in
 {
@@ -24,11 +29,11 @@ in
   themes = lib.mapAttrs (n: v: {
     inherit (v) name usercss schemes;
     include = map makeExtension v.include;
-    outPath = (pkgs.fetchurl v.source);
+    outPath = (pkgs.fetchzip v.source);
   }) json.themes;
 
-  apps = lib.mapAttrs (n: v: {
-    inherit (v) name;
-    outPath = (pkgs.fetchurl v.source);
-  }) json.apps;
+  #  apps = lib.mapAttrs (n: v: {
+  #    inherit (v) name;
+  #    outPath = (pkgs.fetchurl v.source);
+  #  }) json.apps;
 }

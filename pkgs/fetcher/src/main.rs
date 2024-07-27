@@ -212,7 +212,8 @@ async fn get_rev(crab: &Octocrab, owner: &str, name: &str, branch: &String) -> O
     }
 }
 
-fn hash_url(url: String) -> String {
+
+fn fetch_url(url: String) -> FetchURL {
     println!("Hashing: {}", url);
     let command_stdout = Command::new("nix")
         .args(["store", "prefetch-file", &url, "--json"])
@@ -222,23 +223,30 @@ fn hash_url(url: String) -> String {
     let prefetched: Prefetch = serde_json::from_str(&String::from_utf8_lossy(&command_stdout))
         .expect("failed to parse nix store prefetch-file output, how did you make this fail?");
 
-    return prefetched.hash;
-}
-
-fn fetch_url(url: String) -> FetchURL {
     FetchURL {
         url: url.clone(),
-        hash: hash_url(url),
+        hash: prefetched.hash,
     }
 }
 
 fn fetch_gh_archive(repo: &Repository, rev: String) -> FetchURL {
-    let file = format!(
+    let url = format!(
         "{}/archive/{}.tar.gz",
         repo.html_url.clone().expect("Epic html_url failure"),
         rev
     );
-    return fetch_url(file);
+    println!("Hashing: {}", url);
+    let command_stdout = Command::new("nix")
+        .args(["store", "prefetch-file", &url, "--unpack", "--json"])
+        .output()
+        .expect("failed to run nix store prefetch-file lol")
+        .stdout;
+    let prefetched: Prefetch = serde_json::from_str(&String::from_utf8_lossy(&command_stdout))
+        .expect("failed to parse nix store prefetch-file output, how did you make this fail?");
+    FetchURL {
+        url: url.clone(),
+        hash: prefetched.hash,
+    }
 }
 
 async fn extensions(crab: &Octocrab, blacklist: &Vec<String>) -> HashMap<String, ExtOutput> {
