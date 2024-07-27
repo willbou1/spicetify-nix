@@ -105,11 +105,20 @@ struct ThemeOutput {
     include: Vec<ExtOutput>,
 }
 
+// Snippets
+
+#[derive(Serialize, Deserialize)]
+struct Snippet {
+    code: String,
+    preview: String,
+}
+
 #[derive(Serialize, Deserialize)]
 struct Output {
     extensions: HashMap<String, ExtOutput>,
     apps: HashMap<String, AppOutput>,
     themes: HashMap<String, ThemeOutput>,
+    snippets: HashMap<String, String>,
 }
 
 fn sanitize_name(name: &String) -> String {
@@ -470,11 +479,33 @@ async fn main() {
 
     let vector: Blacklist = serde_json::from_str(&blacklist.expect("Failed to read blacklist"))
         .expect("Failed to parse blacklist");
+    let snippets_json = crab
+        .repos("spicetify", "marketplace")
+        .get_content()
+        .path("resources/snippets.json")
+        .r#ref("main")
+        .send()
+        .await
+        .expect("Could not get snippets.json")
+        .items
+        .first()
+        .unwrap()
+        .decoded_content();
+    let snippets_vec: Vec<Snippet> =
+        serde_json::from_str(&snippets_json.expect("Failed to read snippets.json"))
+            .expect("Failed to parse snippets.json");
+
+    let mut snippets_output: HashMap<String, String> = HashMap::new();
+
+    for i in snippets_vec {
+        let mut name = i.preview.replace("resources/assets/snippets/", "");
+        name.truncate(name.len() - 4);
+        snippets_output.insert(name, i.code);
+    }
 
     let extensions = extensions(&crab, &vector.repos);
     let apps = apps(&crab, &vector.repos);
     let themes = themes(&crab, &vector.repos);
-
     // Theme stuff
     let output = join!(extensions, apps, themes);
 
@@ -482,6 +513,7 @@ async fn main() {
         extensions: output.0,
         apps: output.1,
         themes: output.2,
+        snippets: snippets_output,
     };
 
     let output = File::create("generated.json").expect("can't create generated.json");
