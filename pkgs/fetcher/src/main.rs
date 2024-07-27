@@ -1,7 +1,9 @@
+use convert_case::{Case, Casing};
 use octocrab::{models::Repository, Octocrab};
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, OneOrMany};
 use std::{collections::HashMap, fs::File, process::Command};
+use tokio::join;
 
 const NIX: &str = "/run/current-system/sw/bin/nix";
 
@@ -19,6 +21,7 @@ struct FetchURL {
     hash: String,
 }
 
+// Extension
 #[serde_as]
 #[derive(Clone, Serialize, Deserialize, Debug)]
 struct ExtManifests(#[serde_as(as = "OneOrMany<_>")] Vec<ExtManifest>);
@@ -43,6 +46,7 @@ struct ExtOutput {
     source: FetchURL,
 }
 
+// App
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct AppManifest {
     name: String,
@@ -65,10 +69,54 @@ struct AppOutput {
     source: FetchURL,
 }
 
+// Theme
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum IncludeEnum {
+    String(String),
+    FetchURL(FetchURL),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ThemeManifest {
+    name: String,
+    usercss: String,
+    schemes: String,
+    include: Option<Vec<String>>,
+    branch: Option<String>,
+}
+
+#[serde_as]
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct ThemeManifests(#[serde_as(as = "OneOrMany<_>")] Vec<ThemeManifest>);
+
+#[derive(Serialize, Deserialize)]
+struct ThemeTuple {
+    manifests: ThemeManifests,
+    repo: Repository,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ThemeOutput {
+    name: String,
+    source: FetchURL,
+    usercss: String,
+    schemes: String,
+    include: Vec<ExtOutput>,
+}
+
 #[derive(Serialize, Deserialize)]
 struct Output {
     extensions: HashMap<String, ExtOutput>,
     apps: HashMap<String, AppOutput>,
+    themes: HashMap<String, ThemeOutput>,
+}
+
+fn sanitize_name(name: &String) -> String {
+    name.replace("+", "")
+        .replace("(", "")
+        .replace(")", "")
+        .to_case(Case::Camel)
 }
 
 async fn search_tag(crab: &Octocrab, tag: &str) -> Vec<Repository> {
@@ -93,7 +141,7 @@ async fn search_tag(crab: &Octocrab, tag: &str) -> Vec<Repository> {
     return all_pages;
 }
 
-fn filter_tag(blacklist: Vec<String>, tag: Vec<Repository>) -> Vec<Repository> {
+fn filter_tag(blacklist: &Vec<String>, tag: Vec<Repository>) -> Vec<Repository> {
     tag.into_iter()
         .filter(|x| {
             !blacklist.contains(
@@ -120,14 +168,17 @@ async fn get_manifest(crab: &Octocrab, repo: &Repository) -> Option<String> {
                 None => {
                     println!(
                         "Failed to convert manifest.json to string from: {}",
-                        repo.url
+                        repo.html_url.clone().expect("Epic html_url failure")
                     );
                     None
                 }
             }
         }
         Err(..) => {
-            println!("Failed to get manifest.json from: {}", repo.url);
+            println!(
+                "Failed to get manifest.json from: {}",
+                repo.html_url.clone().expect("Epic html_url failure")
+            );
             return None;
         }
     }
@@ -156,58 +207,40 @@ async fn get_rev(crab: &Octocrab, owner: &str, name: &str, branch: &String) -> O
     }
 }
 
-fn fetch_url(repo: &Repository, rev: String) -> FetchURL {
-    let file = format!(
-        "{}/archive/{}.tar.gz",
-        repo.html_url.clone().expect("Epic html_url failure"),
-        rev
-    );
-    println!("{}", file);
+fn hash_url(url: String) -> String {
+    println!("Hashing: {}", url);
     let command_stdout = Command::new(NIX)
-        .args(["store", "prefetch-file", &file, "--json"])
+        .args(["store", "prefetch-file", &url, "--json"])
         .output()
         .expect("failed to run nix store prefetch-file lol")
         .stdout;
     let prefetched: Prefetch = serde_json::from_str(&String::from_utf8_lossy(&command_stdout))
         .expect("failed to parse nix store prefetch-file output, how did you make this fail?");
 
+    return prefetched.hash;
+}
+
+fn fetch_url(url: String) -> FetchURL {
     FetchURL {
-        url: file,
-        hash: prefetched.hash,
+        url: url.clone(),
+        hash: hash_url(url),
     }
 }
 
-#[tokio::main]
-async fn main() {
-    let crab: Octocrab = octocrab::Octocrab::builder()
-        .personal_token(std::env::var("GITHUB_TOKEN").expect("no PAT key moron"))
-        .build()
-        .expect("Failed to crab");
-
-    let blacklist = crab
-        .repos("spicetify", "marketplace")
-        .get_content()
-        .path("resources/blacklist.json")
-        .r#ref("main")
-        .send()
-        .await
-        .expect("Could not get blacklist.json")
-        .items
-        .first()
-        .unwrap()
-        .decoded_content();
-
-    let vector: Blacklist = serde_json::from_str(&blacklist.expect("Failed to read blacklist"))
-        .expect("Failed to parse blacklist");
-
-    let extensions: Vec<Repository> = filter_tag(
-        vector.repos.clone(),
-        search_tag(&crab, "spicetify-extensions").await,
+fn fetch_gh_archive(repo: &Repository, rev: String) -> FetchURL {
+    let file = format!(
+        "{}/archive/{}.tar.gz",
+        repo.html_url.clone().expect("Epic html_url failure"),
+        rev
     );
+    return fetch_url(file);
+}
 
+async fn extensions(crab: &Octocrab, blacklist: &Vec<String>) -> HashMap<String, ExtOutput> {
     let mut potato: HashMap<String, FetchURL> = HashMap::new();
+    let extensions: Vec<Repository> =
+        filter_tag(&blacklist, search_tag(&crab, "spicetify-extensions").await);
 
-    // Extension stuff
     let mut ext_tuple: Vec<ExtTuple> = vec![];
 
     for i in 0..extensions.len() {
@@ -249,22 +282,26 @@ async fn main() {
             let key = format!("{}-{}-{}", owner, name, branch);
 
             if potato.get(&key).is_none() {
-                potato.insert(key.clone(), fetch_url(&i.repo, rev));
+                potato.insert(key.clone(), fetch_gh_archive(&i.repo, rev));
             };
 
             ext_outputs.insert(
-                j.name.clone(),
+                sanitize_name(&j.name),
                 ExtOutput {
-                    name: j.name,
+                    name: j.main.split("/").last().unwrap().to_string(),
                     source: potato.get(&key).unwrap().clone(),
                     main: j.main,
                 },
             );
         }
     }
-    // App stuff
 
-    let apps: Vec<Repository> = filter_tag(vector.repos, search_tag(&crab, "spicetify-apps").await);
+    return ext_outputs;
+}
+
+async fn apps(crab: &Octocrab, blacklist: &Vec<String>) -> HashMap<String, AppOutput> {
+    let mut potato: HashMap<String, FetchURL> = HashMap::new();
+    let apps: Vec<Repository> = filter_tag(&blacklist, search_tag(&crab, "spicetify-apps").await);
 
     let mut app_tuple: Vec<AppTuple> = vec![];
     for i in 0..apps.len() {
@@ -308,11 +345,11 @@ async fn main() {
             let key = format!("{}-{}-{}", owner, name, branch);
 
             if potato.get(&key).is_none() {
-                potato.insert(key.clone(), fetch_url(&i.repo, rev));
+                potato.insert(key.clone(), fetch_gh_archive(&i.repo, rev));
             };
 
             app_outputs.insert(
-                j.name.clone(),
+                sanitize_name(&j.name),
                 AppOutput {
                     name: j.name,
                     source: potato.get(&key).unwrap().clone(),
@@ -321,9 +358,130 @@ async fn main() {
         }
     }
 
+    return app_outputs;
+}
+
+async fn themes(crab: &Octocrab, blacklist: &Vec<String>) -> HashMap<String, ThemeOutput> {
+    let mut potato: HashMap<String, FetchURL> = HashMap::new();
+    let themes: Vec<Repository> =
+        filter_tag(&blacklist, search_tag(&crab, "spicetify-themes").await);
+
+    let mut theme_tuple: Vec<ThemeTuple> = vec![];
+    for i in 0..themes.len() {
+        let manifest = match get_manifest(&crab, &themes[i]).await {
+            Some(x) => x,
+            None => continue,
+        };
+
+        let parse: ThemeManifests = match serde_json::from_str(&manifest) {
+            Ok(ok) => ok,
+            Err(..) => {
+                println!(
+                    "Failed to parse manifest from: {}",
+                    &themes[i].html_url.clone().unwrap().to_string()
+                );
+
+                continue;
+            }
+        };
+
+        theme_tuple.push(ThemeTuple {
+            manifests: parse,
+            repo: themes[i].clone(),
+        });
+    }
+
+    let mut theme_outputs: HashMap<String, ThemeOutput> = HashMap::new();
+
+    for i in theme_tuple {
+        let owner = &get_owner(&i.repo);
+        let name = &i.repo.name;
+
+        for j in i.manifests.0 {
+            let branch = j.branch.unwrap_or(get_default_branch(&i.repo));
+
+            let rev = match get_rev(&crab, owner, name, &branch).await {
+                Some(x) => x,
+                None => continue,
+            };
+
+            let key = format!("{}-{}-{}", owner, name, branch);
+
+            if potato.get(&key).is_none() {
+                potato.insert(key.clone(), fetch_gh_archive(&i.repo, rev));
+            };
+
+            theme_outputs.insert(
+                sanitize_name(&j.name),
+                ThemeOutput {
+                    name: j.name.clone(),
+                    source: potato.get(&key).unwrap().clone(),
+                    schemes: j.schemes,
+                    usercss: j.usercss,
+                    include: match j.include {
+                        None => vec![],
+                        Some(x) => {
+                            let mut val: Vec<ExtOutput> = vec![];
+                            for s in x {
+                                if s.starts_with("http") {
+                                    val.push(ExtOutput {
+                                        name: s.split("/").last().unwrap().to_string(),
+                                        main: "__INCLUDE__".to_string(),
+                                        source: fetch_url(s),
+                                    })
+                                } else {
+                                    val.push(ExtOutput {
+                                        name: s.split("/").last().unwrap().to_string(),
+                                        main: s.clone(),
+                                        source: potato.get(&key).unwrap().clone(),
+                                    })
+                                }
+                            }
+                            val
+                        }
+                    },
+                },
+            );
+        }
+    }
+
+    return theme_outputs;
+}
+
+#[tokio::main]
+async fn main() {
+    let crab: Octocrab = octocrab::Octocrab::builder()
+        .personal_token(std::env::var("GITHUB_TOKEN").expect("no PAT key moron"))
+        .build()
+        .expect("Failed to crab");
+
+    let blacklist = crab
+        .repos("spicetify", "marketplace")
+        .get_content()
+        .path("resources/blacklist.json")
+        .r#ref("main")
+        .send()
+        .await
+        .expect("Could not get blacklist.json")
+        .items
+        .first()
+        .unwrap()
+        .decoded_content();
+
+    let vector: Blacklist = serde_json::from_str(&blacklist.expect("Failed to read blacklist"))
+        .expect("Failed to parse blacklist");
+
+    let extensions = extensions(&crab, &vector.repos);
+    let apps = apps(&crab, &vector.repos);
+    let themes = themes(&crab, &vector.repos);
+
+    // Theme stuff
+    let output = join!(extensions, apps, themes);
+
     let final_output: Output = Output {
-        extensions: ext_outputs,
-        apps: app_outputs,
+        extensions: output.0,
+        apps: output.1,
+        themes: output.2,
     };
 
     let output = File::create("generated.json").expect("can't create generated.json");
