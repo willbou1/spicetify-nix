@@ -9,6 +9,16 @@ const NIX: &str = "/run/current-system/sw/bin/nix";
 struct Blacklist {
     repos: Vec<String>,
 }
+#[derive(Serialize, Deserialize)]
+struct Prefetch {
+    hash: String,
+}
+#[derive(Serialize, Deserialize, Clone)]
+struct FetchURL {
+    url: String,
+    hash: String,
+}
+
 #[serde_as]
 #[derive(Clone, Serialize, Deserialize, Debug)]
 struct ExtManifests(#[serde_as(as = "OneOrMany<_>")] Vec<ExtManifest>);
@@ -21,35 +31,46 @@ struct ExtManifest {
 }
 
 #[derive(Serialize, Deserialize)]
-struct ExtOutput {
-    name: String,
-    main: String,
-    source: FetchFromGitHub,
-}
-
-#[derive(Serialize, Deserialize)]
 struct ExtTuple {
     manifests: ExtManifests,
     repo: Repository,
 }
 
 #[derive(Serialize, Deserialize)]
-struct Output {
-    extensions: Vec<ExtOutput>,
+struct ExtOutput {
+    name: String,
+    main: String,
+    source: FetchURL,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct AppManifest {
+    name: String,
+    branch: Option<String>,
+}
+
+#[serde_as]
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct AppManifests(#[serde_as(as = "OneOrMany<_>")] Vec<AppManifest>);
+
+#[derive(Serialize, Deserialize)]
+struct AppTuple {
+    manifests: AppManifests,
+    repo: Repository,
 }
 
 #[derive(Serialize, Deserialize)]
-struct Prefetch {
-    hash: String,
+struct AppOutput {
+    name: String,
+    source: FetchURL,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-struct FetchFromGitHub {
-    owner: String,
-    repo: String,
-    hash: String,
-    rev: String,
+#[derive(Serialize, Deserialize)]
+struct Output {
+    extensions: HashMap<String, ExtOutput>,
+    apps: HashMap<String, AppOutput>,
 }
+
 async fn search_tag(crab: &Octocrab, tag: &str) -> Vec<Repository> {
     let mut current_page = crab
         .search()
@@ -112,6 +133,50 @@ async fn get_manifest(crab: &Octocrab, repo: &Repository) -> Option<String> {
     }
 }
 
+fn get_owner(repo: &Repository) -> String {
+    repo.owner.clone().expect("failed to get repo owner?").login
+}
+
+fn get_default_branch(repo: &Repository) -> String {
+    repo.default_branch
+        .clone()
+        .expect("failed to get default_branch")
+}
+
+async fn get_rev(crab: &Octocrab, owner: &str, name: &str, branch: &String) -> Option<String> {
+    match crab.commits(owner, name).get(branch.clone()).await {
+        Ok(x) => Some(x.sha),
+        Err(..) => {
+            println!(
+                "Failed to get latest commit of github.com/{}/{} branch: {}",
+                owner, name, branch
+            );
+            None
+        }
+    }
+}
+
+fn fetch_url(repo: &Repository, rev: String) -> FetchURL {
+    let file = format!(
+        "{}/archive/{}.tar.gz",
+        repo.html_url.clone().expect("Epic html_url failure"),
+        rev
+    );
+    println!("{}", file);
+    let command_stdout = Command::new(NIX)
+        .args(["store", "prefetch-file", &file, "--json"])
+        .output()
+        .expect("failed to run nix store prefetch-file lol")
+        .stdout;
+    let prefetched: Prefetch = serde_json::from_str(&String::from_utf8_lossy(&command_stdout))
+        .expect("failed to parse nix store prefetch-file output, how did you make this fail?");
+
+    FetchURL {
+        url: file,
+        hash: prefetched.hash,
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let crab: Octocrab = octocrab::Octocrab::builder()
@@ -136,10 +201,13 @@ async fn main() {
         .expect("Failed to parse blacklist");
 
     let extensions: Vec<Repository> = filter_tag(
-        vector.repos,
+        vector.repos.clone(),
         search_tag(&crab, "spicetify-extensions").await,
     );
 
+    let mut potato: HashMap<String, FetchURL> = HashMap::new();
+
+    // Extension stuff
     let mut ext_tuple: Vec<ExtTuple> = vec![];
 
     for i in 0..extensions.len() {
@@ -165,65 +233,26 @@ async fn main() {
             repo: extensions[i].clone(),
         });
     }
-
-    let mut potato: HashMap<String, FetchFromGitHub> = HashMap::new();
-    let mut potato2: HashMap<String, ExtOutput> = HashMap::new();
-
+    let mut ext_outputs: HashMap<String, ExtOutput> = HashMap::new();
     for i in ext_tuple {
-        let owner = &i
-            .repo
-            .owner
-            .clone()
-            .expect("failed to get repo owner?")
-            .login;
+        let owner = &get_owner(&i.repo);
         let name = &i.repo.name;
 
         for j in i.manifests.0 {
-            let branch = j.branch.unwrap_or(
-                i.repo
-                    .default_branch
-                    .clone()
-                    .expect("failed to get default_branch"),
-            );
-            let rev = crab
-                .commits(owner, name)
-                .get(branch.clone())
-                .await
-                .expect("failed to get latest commit of branch")
-                .sha;
+            let branch = j.branch.unwrap_or(get_default_branch(&i.repo));
 
-            let file = format!(
-                "{}/archive/{}.tar.gz",
-                i.repo.html_url.clone().expect("Epic html_url failure"),
-                rev
-            );
-
-            let command_stdout = Command::new(NIX)
-                .args(["store", "prefetch-file", &file, "--json"])
-                .output()
-                .expect("failed to run nix store prefetch-file lol")
-                .stdout;
-            let prefetched: Prefetch = serde_json::from_str(&String::from_utf8_lossy(
-                &command_stdout,
-            ))
-            .expect("failed to parse nix store prefetch-file output, how did you make this fail?");
+            let rev = match get_rev(&crab, owner, name, &branch).await {
+                Some(x) => x,
+                None => continue,
+            };
 
             let key = format!("{}-{}-{}", owner, name, branch);
 
             if potato.get(&key).is_none() {
-                println!("{}", file);
-                potato.insert(
-                    key.clone(),
-                    FetchFromGitHub {
-                        owner: owner.to_string(),
-                        repo: name.to_string(),
-                        rev,
-                        hash: prefetched.hash.to_string(),
-                    },
-                );
+                potato.insert(key.clone(), fetch_url(&i.repo, rev));
             };
 
-            potato2.insert(
+            ext_outputs.insert(
                 j.name.clone(),
                 ExtOutput {
                     name: j.name,
@@ -233,7 +262,70 @@ async fn main() {
             );
         }
     }
+    // App stuff
 
-    let file2 = File::create("extensions.json").expect("can't create extensions.jspon");
-    serde_json::to_writer_pretty(&file2, &potato2).expect("failed to save extensions.json");
+    let apps: Vec<Repository> = filter_tag(vector.repos, search_tag(&crab, "spicetify-apps").await);
+
+    let mut app_tuple: Vec<AppTuple> = vec![];
+    for i in 0..apps.len() {
+        let manifest = match get_manifest(&crab, &apps[i]).await {
+            Some(x) => x,
+            None => continue,
+        };
+
+        let parse: AppManifests = match serde_json::from_str(&manifest) {
+            Ok(ok) => ok,
+            Err(..) => {
+                println!(
+                    "Failed to parse manifest from: {}",
+                    &apps[i].html_url.clone().unwrap().to_string()
+                );
+
+                continue;
+            }
+        };
+
+        app_tuple.push(AppTuple {
+            manifests: parse,
+            repo: apps[i].clone(),
+        });
+    }
+
+    let mut app_outputs: HashMap<String, AppOutput> = HashMap::new();
+
+    for i in app_tuple {
+        let owner = &get_owner(&i.repo);
+        let name = &i.repo.name;
+
+        for j in i.manifests.0 {
+            let branch = j.branch.unwrap_or(get_default_branch(&i.repo));
+
+            let rev = match get_rev(&crab, owner, name, &branch).await {
+                Some(x) => x,
+                None => continue,
+            };
+
+            let key = format!("{}-{}-{}", owner, name, branch);
+
+            if potato.get(&key).is_none() {
+                potato.insert(key.clone(), fetch_url(&i.repo, rev));
+            };
+
+            app_outputs.insert(
+                j.name.clone(),
+                AppOutput {
+                    name: j.name,
+                    source: potato.get(&key).unwrap().clone(),
+                },
+            );
+        }
+    }
+
+    let final_output: Output = Output {
+        extensions: ext_outputs,
+        apps: app_outputs,
+    };
+
+    let output = File::create("generated.json").expect("can't create generated.json");
+    serde_json::to_writer_pretty(&output, &final_output).expect("failed to save generated.json");
 }
