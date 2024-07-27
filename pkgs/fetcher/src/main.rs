@@ -5,8 +5,6 @@ use serde_with::{serde_as, OneOrMany};
 use std::{collections::HashMap, fs::File, process::Command};
 use tokio::join;
 
-const NIX: &str = "/run/current-system/sw/bin/nix";
-
 #[derive(Serialize, Deserialize)]
 struct Blacklist {
     repos: Vec<String>,
@@ -218,7 +216,7 @@ async fn get_rev(crab: &Octocrab, owner: &str, name: &str, branch: &String) -> O
 
 fn hash_url(url: String) -> String {
     println!("Hashing: {}", url);
-    let command_stdout = Command::new(NIX)
+    let command_stdout = Command::new("nix")
         .args(["store", "prefetch-file", &url, "--json"])
         .output()
         .expect("failed to run nix store prefetch-file lol")
