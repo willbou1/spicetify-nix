@@ -2,8 +2,6 @@
   self,
   lib,
   rustPlatform,
-  rust-analyzer,
-  rustfmt,
 }:
 rustPlatform.buildRustPackage {
   pname = "fetcher";
@@ -19,7 +17,5 @@ rustPlatform.buildRustPackage {
     );
   };
   cargoLock.lockFile = ./Cargo.lock;
-  buildInputs = [ ];
-  nativeBuildInputs = [ rust-analyzer rustfmt ];
   meta.mainProgram = "fetcher";
 }
