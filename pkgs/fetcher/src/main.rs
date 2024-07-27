@@ -121,6 +121,7 @@ struct Output {
 
 fn sanitize_name(name: &String) -> String {
     name.replace("+", "")
+        .replace("\"", "")
         .replace("(", "")
         .replace(")", "")
         .to_case(Case::Camel)
@@ -498,7 +499,7 @@ async fn main() {
     for i in snippets_vec {
         let mut name = i.preview.replace("resources/assets/snippets/", "");
         name.truncate(name.len() - 4);
-        snippets_output.insert(name, i.code);
+        snippets_output.insert(name.to_case(Case::Camel), i.code);
     }
 
     let extensions = extensions(&crab, &vector.repos);
