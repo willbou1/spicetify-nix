@@ -24,16 +24,33 @@ in
     inherit (spicePkgs) spicetify;
   };
 
-  extensions = lib.mapAttrs (n: v: makeExtension v) json.extensions;
+  extensions =
+    let
+      prev = lib.mapAttrs (n: v: makeExtension v) json.extensions;
+    in
+    prev
+    // {
+      # Overrides go here
+    };
 
-  themes = lib.mapAttrs (n: v: {
-    inherit (v) name usercss schemes;
-    include = map makeExtension v.include;
-    outPath = (pkgs.fetchzip v.source);
-  }) json.themes;
+  themes =
+    let
+      prev = lib.mapAttrs (n: v: {
+        inherit (v) name usercss schemes;
+        include = map makeExtension v.include;
+        outPath = (pkgs.fetchzip v.source);
+      }) json.themes;
+    in
+    prev
+    // {
+      # Overrides go here
+    };
+
+  # not possible to auto generate all the apps right now
 
   #  apps = lib.mapAttrs (n: v: {
   #    inherit (v) name;
   #    outPath = (pkgs.fetchurl v.source);
   #  }) json.apps;
+
 }
